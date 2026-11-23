@@ -56,7 +56,8 @@ export function createFloorRunner(host) {
                 const stream = host.context().streamingProcessor;
                 if (!stream || stream.messageId < round.before || stream.type !== 'normal') return;
                 round.stream = stream;
-                if (!host.visibleText(text).trim()) return;
+                const message = origin.chat[stream.messageId];
+                if (!host.streamText(text, stream, message).trim()) return;
                 // The streaming processor stores its current result before this event.
                 // Stop synchronously, then await Generate's own finalization below.
                 round.cut = true;
@@ -78,9 +79,9 @@ export function createFloorRunner(host) {
                     round.pending = false;
                 }
                 if (cancelled || !sameChat()) break;
-                if (!round.cut) throw new Error('没有收到可中断的流式正文，已停止；请检查接口是否真的支持流式输出。');
+                if (!round.cut) throw new Error('本层没有检测到可中断的文字（正文或思考），已停止。请检查酒馆版本、流式设置或接口返回内容。');
                 const added = origin.chat.slice(round.before);
-                if (added.length !== 1 || added[0].is_user || added[0].is_system || !String(added[0].mes ?? '').trim()) {
+                if (added.length !== 1 || added[0].is_user || added[0].is_system || !hasSavedText(added[0])) {
                     throw new Error('本次没有保存一条有效 AI 回复，已停止；请检查接口或其他自动生成插件。');
                 }
                 current++;
@@ -104,14 +105,20 @@ export function createFloorRunner(host) {
     return { start, stop, get running() { return running; } };
 }
 
-// Ignore empty chunks and in-band reasoning using the user's configured delimiters.
-export function stripReasoning(text, { auto_parse, prefix, suffix } = {}) {
-    let body = String(text ?? '').trimStart();
-    if (!auto_parse || !prefix || !suffix) return body;
-    if (prefix.startsWith(body)) return '';
-    if (body.startsWith(prefix)) {
-        const end = body.indexOf(suffix, prefix.length);
-        body = end < 0 ? '' : body.slice(end + suffix.length);
+export function hasSavedText(message) {
+    return Boolean(String(message?.mes ?? '').trim() || String(message?.extra?.reasoning ?? '').trim());
+}
+
+// Native streaming updates the reasoning handler BEFORE emitting the text event,
+// but persists message.extra.reasoning later. Check both locations, not only text.
+export function getStreamText(text, stream, message, { auto_parse, prefix, suffix } = {}) {
+    const reasoning = String(stream?.reasoningHandler?.reasoning || message?.extra?.reasoning || '').trim();
+    if (reasoning) return reasoning;
+    let content = String(text ?? '').trimStart();
+    if (auto_parse && prefix) {
+        if (prefix.startsWith(content)) return '';
+        if (content.startsWith(prefix)) content = content.slice(prefix.length);
+        if (suffix) content = content.replace(suffix, '');
     }
-    return body;
+    return content;
 }

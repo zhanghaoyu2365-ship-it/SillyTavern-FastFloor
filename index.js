@@ -2,7 +2,7 @@ import * as Tavern from '../../../../script.js';
 import { extension_settings, getContext } from '../../../extensions.js';
 import { is_group_generating } from '../../../group-chats.js';
 import { power_user } from '../../../power-user.js';
-import { createFloorRunner, stripReasoning } from './runner.js';
+import { createFloorRunner, getStreamText } from './runner.js';
 
 const EXT_KEY = 'fastFloor';
 const defaults = { floors: 20, prompt: '继续' };
@@ -47,13 +47,13 @@ const runner = createFloorRunner({
     checkReady,
     status: setStatus,
     stopGeneration: () => Tavern.stopGeneration(),
-    visibleText: text => Tavern.cleanUpMessage({
-        getMessage: stripReasoning(text, power_user.reasoning),
+    streamText: (text, stream, message) => getStreamText(Tavern.cleanUpMessage({
+        getMessage: String(text ?? ''),
         isImpersonate: false,
         isContinue: false,
         displayIncompleteSentences: true,
         includeUserPromptBias: false,
-    }),
+    }), stream, message, power_user.reasoning),
     on(name, handler) {
         const ctx = context();
         const event = ctx.eventTypes[name];
@@ -135,7 +135,7 @@ function buildUI() {
                         <label for="fastfloor_prompt">隐藏提示词</label>
                         <input id="fastfloor_prompt" class="text_pole" type="text" value="">
                     </div>
-                    <small class="fastfloor-hint">收到第一段正文就打断，保留本层后马上生成下一层。需要开启流式传输；每层可能保留几个字或一小段。</small>
+                    <small class="fastfloor-hint">v1.1.1 · 思考或正文一出字就打断，保留本层后马上生成下一层。需要开启流式传输；只有思考内容也算一层。</small>
                     <div class="fastfloor-actions">
                         <button type="button" id="fastfloor_start" class="menu_button">▶ 开始</button>
                         <button type="button" id="fastfloor_stop" class="menu_button" disabled>■ 立即停止</button>

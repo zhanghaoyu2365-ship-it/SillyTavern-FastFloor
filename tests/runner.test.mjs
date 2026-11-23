@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 const code = await readFile(new URL('../runner.js', import.meta.url), 'utf8');
-const { createFloorRunner, stripReasoning } = await import('data:text/javascript;base64,' + Buffer.from(code).toString('base64'));
+const { createFloorRunner, getStreamText, hasSavedText } = await import('data:text/javascript;base64,' + Buffer.from(code).toString('base64'));
 
 function fixture(custom = {}) {
     const events = new Map();
@@ -15,7 +15,7 @@ function fixture(custom = {}) {
         status: (...args) => state.statuses.push(args),
         running: value => { state.active = value; },
         stopGeneration() { state.stops++; emit('GENERATION_STOPPED'); },
-        visibleText: text => stripReasoning(text, { auto_parse: true, prefix: '<think>', suffix: '</think>' }),
+        streamText: (text, stream, message) => getStreamText(text, stream, message, { auto_parse: true, prefix: '<think>', suffix: '</think>' }),
         on(name, handler) {
             if (!events.has(name)) events.set(name, new Set());
             events.get(name).add(handler);
@@ -30,9 +30,9 @@ function fixture(custom = {}) {
             emit('STREAM_TOKEN_RECEIVED', '');
             emit('STREAM_TOKEN_RECEIVED', '   ');
             emit('STREAM_TOKEN_RECEIVED', '<thi');
-            emit('STREAM_TOKEN_RECEIVED', '<think>思考中');
+            emit('STREAM_TOKEN_RECEIVED', '<think>');
             assert.equal(state.stops, state.calls - 1);
-            emit('STREAM_TOKEN_RECEIVED', '<think>思考中</think>你');
+            emit('STREAM_TOKEN_RECEIVED', '你');
             assert.equal(state.stops, state.calls, 'stop on first body chunk before Generate resolves');
             emit('STREAM_TOKEN_RECEIVED', '你');
             await Promise.resolve();
@@ -100,7 +100,7 @@ test('API failures stop and restore state instead of retrying', async () => {
 test('silent failure or nonstream response does not count or repeat', async () => {
     const f = fixture();
     f.host.generate = async () => { f.state.calls++; };
-    await assert.rejects(f.runner.start({ floors: 20, prompt: '继续' }), /流式正文/);
+    await assert.rejects(f.runner.start({ floors: 20, prompt: '继续' }), /正文或思考/);
     assert.equal(f.state.calls, 1);
 });
 
@@ -141,10 +141,64 @@ test('stop between floors prevents the next generation', async () => {
     assert.equal(f.state.calls, 1);
 });
 
-test('uses configured reasoning delimiters and ignores partial prefixes', () => {
+test('counts in-band reasoning text but not empty or partial markup', () => {
     const config = { auto_parse: true, prefix: '<think>', suffix: '</think>' };
-    assert.equal(stripReasoning('<t', config), '');
-    assert.equal(stripReasoning('<think>abc', config), '');
-    assert.equal(stripReasoning('<think>abc</think>正文', config), '正文');
-    assert.equal(stripReasoning('你好', config), '你好');
+    const text = value => getStreamText(value, null, null, config);
+    assert.equal(text('<t'), '');
+    assert.equal(text('<think>'), '');
+    assert.equal(text('<think>abc'), 'abc');
+    assert.equal(text('<think>abc</think>正文'), 'abc正文');
+    assert.equal(text('你好'), '你好');
+});
+
+test('reasoning-only streams stop on first reasoning chunk and continue after saving', async () => {
+    const f = fixture();
+    f.host.generate = async () => {
+        assert.equal(f.state.saved, f.state.calls, 'previous save must settle first');
+        f.state.calls++;
+        const message = { mes: '', is_user: false, extra: { reasoning: '' } };
+        const id = f.ctx.chat.push(message) - 1;
+        const stream = { type: 'normal', messageId: id, reasoningHandler: { reasoning: '' } };
+        f.ctx.streamingProcessor = stream;
+        f.emit('STREAM_TOKEN_RECEIVED', '');
+        assert.equal(f.state.stops, f.state.calls - 1);
+        // Matches native order: handler state changes, text event fires, then save.
+        stream.reasoningHandler.reasoning = 'Let';
+        f.emit('STREAM_TOKEN_RECEIVED', '');
+        assert.equal(f.state.stops, f.state.calls, 'empty text event still interrupts reasoning');
+        assert.equal(message.extra.reasoning, '', 'message has not been persisted at interruption');
+        await Promise.resolve();
+        message.extra.reasoning = stream.reasoningHandler.reasoning;
+        f.state.saved++;
+    };
+    const result = await f.runner.start({ floors: 3, prompt: '继续' });
+    assert.deepEqual(result, { current: 3, target: 3, cancelled: false });
+    assert.equal(f.state.stops, 3);
+    assert.ok(f.ctx.chat.every(m => m.mes === '' && m.extra.reasoning === 'Let'));
+});
+
+test('reasoning already persisted on the current message is also detected', () => {
+    assert.equal(getStreamText('', {}, { extra: { reasoning: '思' } }), '思');
+    assert.equal(getStreamText('', { reasoningHandler: { reasoning: ' ' } }, { extra: { reasoning: '' } }).trim(), '');
+});
+
+test('only nonempty body or reasoning validates a saved floor', () => {
+    assert.equal(hasSavedText({ mes: '', extra: { reasoning: '思' } }), true);
+    assert.equal(hasSavedText({ mes: '你', extra: {} }), true);
+    assert.equal(hasSavedText({ mes: '', extra: { reasoning: '  ', reasoning_duration: 4000 } }), false);
+    assert.equal(hasSavedText({ mes: '', extra: {} }), false);
+});
+
+test('in-band reasoning is kept even when the final saved body is empty', async () => {
+    const f = fixture();
+    f.host.generate = async () => {
+        const message = { mes: '', is_user: false, extra: {} };
+        const id = f.ctx.chat.push(message) - 1;
+        f.ctx.streamingProcessor = { type: 'normal', messageId: id };
+        f.emit('STREAM_TOKEN_RECEIVED', '<think>思');
+        assert.equal(f.state.stops, 1);
+        message.extra.reasoning = '思';
+    };
+    const result = await f.runner.start({ floors: 1, prompt: '继续' });
+    assert.equal(result.current, 1);
 });
