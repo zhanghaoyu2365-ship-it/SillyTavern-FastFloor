@@ -57,6 +57,7 @@ export function createFloorRunner(host) {
                 if (!stream || stream.messageId < round.before || stream.type !== 'normal') return;
                 round.stream = stream;
                 const message = origin.chat[stream.messageId];
+                round.message = message;
                 if (!host.streamText(text, stream, message).trim()) return;
                 // The streaming processor stores its current result before this event.
                 // Stop synchronously, then await Generate's own finalization below.
@@ -77,11 +78,12 @@ export function createFloorRunner(host) {
                     if (!cancelled && !(round.cut && error?.name === 'AbortError')) throw error;
                 } finally {
                     round.pending = false;
+                    if (sameChat()) await host.finalizeRound?.(origin, round.before);
                 }
                 if (cancelled || !sameChat()) break;
                 if (!round.cut) throw new Error('本层没有检测到可中断的文字（正文或思考），已停止。请检查酒馆版本、流式设置或接口返回内容。');
                 const added = origin.chat.slice(round.before);
-                if (added.length !== 1 || added[0].is_user || added[0].is_system || !hasSavedText(added[0])) {
+                if (added.length !== 1 || added[0] !== round.message || added[0].is_user || !hasSavedText(added[0])) {
                     throw new Error('本次没有保存一条有效 AI 回复，已停止；请检查接口或其他自动生成插件。');
                 }
                 current++;

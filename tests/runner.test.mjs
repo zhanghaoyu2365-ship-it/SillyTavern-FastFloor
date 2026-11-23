@@ -202,3 +202,41 @@ test('in-band reasoning is kept even when the final saved body is empty', async 
     const result = await f.runner.start({ floors: 1, prompt: '继续' });
     assert.equal(result.current, 1);
 });
+
+test('each generated floor is hidden and saved before the next request, while still counted', async () => {
+    const f = fixture();
+    let hidden = 0;
+    const generate = f.host.generate;
+    f.host.generate = async () => {
+        assert.equal(hidden, f.state.calls);
+        await generate();
+    };
+    f.host.finalizeRound = async (origin, before) => {
+        await Promise.resolve();
+        origin.chat[before].is_system = true;
+        hidden++;
+    };
+    const result = await f.runner.start({ floors: 3, prompt: '继续' });
+    assert.equal(result.current, 3);
+    assert.equal(hidden, 3);
+});
+
+test('manual stop still finalizes the new partial message', async () => {
+    const f = fixture();
+    f.host.generate = async () => {
+        f.ctx.chat.push({ mes: '部分回复', is_user: false });
+        f.runner.stop();
+    };
+    f.host.finalizeRound = async (origin, before) => { origin.chat[before].is_system = true; };
+    await f.runner.start({ floors: 10, prompt: '继续' });
+    assert.equal(f.ctx.chat.length, 1);
+    assert.equal(f.ctx.chat[0].is_system, true);
+});
+
+test('hiding/save failure stops the batch before another request', async () => {
+    const f = fixture();
+    f.host.finalizeRound = async () => { throw new Error('save failed'); };
+    await assert.rejects(f.runner.start({ floors: 10, prompt: '继续' }), /save failed/);
+    assert.equal(f.state.calls, 1);
+    assert.equal(f.runner.running, false);
+});

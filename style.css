@@ -2,6 +2,12 @@
     margin: 8px 0;
 }
 
+.fastfloor-bulk { margin-top: 12px; }
+.fastfloor-bulk summary { cursor: pointer; }
+.fastfloor-range:not([hidden]) { display: grid; grid-template-columns: 90px minmax(0, 1fr); gap: 8px; align-items: center; }
+.fastfloor-row { min-width: 0; }
+.fastfloor-row .text_pole { min-width: 0; }
+
 #fastfloor_settings .inline-drawer-content {
     padding: 8px 10px 12px;
 }
